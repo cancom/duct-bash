@@ -1,0 +1,5 @@
+**/.git*
+*.sh
+.dockerignore
+.editorconfig
+Dockerfile

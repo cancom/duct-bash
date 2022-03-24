@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+
+# duct-curl
+
+declare -a DUCT_CURL_OPTS=(
+  -sSL
+)
+
+__duct_curl() {
+  local CURL_RC=0
+
+  __duct_run curl "${DUCT_CURL_OPTS[@]}" "$@" || CURL_RC=$?
+
+  return $CURL_RC
+}

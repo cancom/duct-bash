@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+
+# shellcheck disable=SC1090,SC1091,SC2034,SC2155
+
+if [[ "$0" == "${BASH_SOURCE[0]}" ]]
+then
+  echo "Use the source, Luke"
+  echo "Don't run me directly!"
+  exit 1
+fi
+
+readonly DUCT_SHARE="$(cd "${BASH_SOURCE[0]%/*}" && echo "$PWD")"
+readonly DUCT_PLUGS="${DUCT_SHARE}/plugins"
+
+# general
+declare DUCT_TMP_DIR="${TMPDIR:-"/tmp"}"
+declare DUCT_WORK_DIR="${PWD:-"."}"
+
+# plugins
+for DUCT_PLUGIN in "$DUCT_PLUGS"/duct-*
+do
+  source "${DUCT_PLUGIN:?}"
+done
+
+# self
+readonly DUCT_SELF_FILE="${BASH_SOURCE[0]:?}"
+readonly DUCT_SELF_NAME="$(__duct_basename "$DUCT_SELF_FILE")"
+readonly DUCT_SELF_PATH="$(__duct_dirname "$DUCT_SELF_FILE")"
+readonly DUCT_SELF_DESCRIPTION="Bash pipelines functions & helpers"
+readonly DUCT_SELF_VERSION="v0.0.1"
+readonly DUCT_SELF_LICENSE="MIT License"
+readonly DUCT_SELF_LICENSE_FILE="LICENSE.txt"
+readonly DUCT_SELF_URL="https://duct.sh0.org"
+
+# call
+if [[ -n ${BASH_SOURCE[1]+x} ]]
+then
+  readonly DUCT_CALL_FILE="${BASH_SOURCE[1]:?}"
+  readonly DUCT_CALL_NAME="$(__duct_basename "$DUCT_CALL_FILE")"
+  readonly DUCT_CALL_PATH="$(__duct_dirname "$DUCT_CALL_FILE")"
+fi
+
+# requirements
+declare -r -a DUCT_REQUIRED_BIN=(
+  awk
+  base64
+  bash
+  cat
+  curl
+  diff
+  git
+  install
+  jq
+  sort
+  tar
+  tee
+  tr
+  unzip
+  xz
+)
+
+declare -a DUCT_GNUTOOLS_BIN=(
+  grep
+  sed
+)
+
+# init
+declare DUCT_INIT=false
+declare DUCT_INIT_QUIET=false
+
+# environment config
+readonly -a DUCT_ENV_CONF_FILES=(
+  "${XDG_CONFIG_HOME:-"${HOME}/.config"}/duct/env"
+  "${HOME}/.ductenv"
+)
+declare DUCT_ENV_CONF=false
+
+# bash
+declare DUCT_BASH_SRANDOM=false
+
+# mask
+declare DUCT_MASK=true
+declare DUCT_MASK_STR="[XXXX]"
+
+# duct
+duct() {
+  local DUCT_CMD="${1:-}"
+
+  if [[ -z "$DUCT_CMD" ]]
+  then
+    __duct_msg e "no duct command!"
+    return 1
+  else
+    shift
+  fi
+
+  if [[ "$DUCT_CMD" == version ]]
+  then
+    __duct_version
+    return 0
+  fi
+
+  local DUCT_OPT=( "$@" )
+
+  # check bash
+  __duct_bash_check
+
+  # init
+  if [[ $DUCT_INIT == false ]]
+  then
+    __duct_init
+  fi
+
+  # environment config
+  if [[ $DUCT_ENV_CONF == false ]]
+  then
+    __duct_env_conf
+  fi
+
+  # mask
+  if [[ "$DUCT_MASK" != true ]]
+  then
+    __duct_msg w "MASK DISABLED!"
+    __duct_msg w "SHOWING SECRETS!"
+  fi
+
+  if [[ "${DUCT_CMD}" =~ [a-z]+\-[a-z]+ ]]
+  then
+    DUCT_CMD="${DUCT_CMD//-/_}"
+  fi
+
+  if [[ "$(type -t "__duct_${DUCT_CMD}")" == "function" ]]
+  then
+    if [[ "${#DUCT_OPT[@]}" -lt 1 ]] && [[ "$(type -t "__duct_${DUCT_CMD}_help")" == "function" ]]
+    then
+      __duct_"${DUCT_CMD}" "help"
+    else
+      __duct_"${DUCT_CMD}" "${DUCT_OPT[@]}"
+    fi
+  else
+    __duct_msg e "duct '$DUCT_CMD' command not found!"
+    return 1
+  fi
+}
+
+# version
+__duct_version() {
+  echo "$DUCT_SELF_NAME - $DUCT_SELF_DESCRIPTION"
+  echo "version: $DUCT_SELF_VERSION"
+  echo "license: $DUCT_SELF_LICENSE"
+  echo "website: $DUCT_SELF_URL"
+}
+
+# bash check
+__duct_bash_check() {
+  if [[ ${BASH_VERSINFO[0]} -lt 4 ]]
+  then
+    echo "duct: unsupported bash version $BASH_VERSION"
+    return 1
+  elif [[ ${BASH_VERSINFO[0]} -ge 5 ]] && \
+       [[ ${BASH_VERSINFO[1]} -ge 1 ]] && \
+       [[ ${BASH_VERSINFO[2]} -ge 4 ]]
+  then
+    DUCT_BASH_SRANDOM=true
+  fi
+  return 0
+}
+
+# init
+__duct_init() {
+  local MSG_LEVEL="$DUCT_MSG_LEVEL"
+
+  if [[ "$DUCT_INIT_QUIET" == true ]]
+  then
+    DUCT_MSG_LEVEL=0
+  fi
+
+  # check requirements
+  __duct_bin_check "${DUCT_REQUIRED_BIN[@]}"
+  __duct_bin_check_gnutools
+
+  DUCT_INIT=true
+  DUCT_MSG_LEVEL="$MSG_LEVEL"
+}
+
+# environment config
+__duct_env_conf() {
+  local ENV_CONF
+
+  for ENV_CONF in "${DUCT_ENV_CONF_FILES[@]}"
+  do
+    if [[ -s "$ENV_CONF" ]]
+    then
+      source "$ENV_CONF" || exit
+      DUCT_ENV_CONF=true
+      break
+    fi
+  done
+
+  DUCT_ENV_CONF=true
+}

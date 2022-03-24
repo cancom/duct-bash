@@ -1,0 +1,9 @@
+---
+- name: duct-ansible-tests
+  gather_facts: yes
+  hosts:
+    - localhost
+
+  roles:
+    - name: motd
+      motd_enabled: yes

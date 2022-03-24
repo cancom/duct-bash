@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+# shellcheck disable=SC2155
+
+# duct-bin
+
+declare DUCT_BIN_INSTALL_NAME=""
+declare DUCT_BIN_INSTALL_NAMESPACE=""
+declare DUCT_BIN_INSTALL_VERSION=""
+declare DUCT_BIN_INSTALL_ARCH=""
+declare DUCT_BIN_INSTALL_ARCHIVE="${DUCT_BIN_INSTALL_NAME}-${DUCT_BIN_INSTALL_VERSION}-${DUCT_BIN_INSTALL_ARCH}.tar.gz"
+declare -a DUCT_BIN_INSTALL_FILES=()
+declare DUCT_BIN_INSTALL_DIR="/usr/local/bin"
+declare DUCT_BIN_INSTALL_MODE=0755
+
+# bin
+__duct_bin() {
+  local BIN_CMD="${1:-}"; shift
+  local -a BIN_OPT=( "$@" )
+
+  case "$BIN_CMD"
+  in
+    set-arch|set_arch)
+      __duct_bin_set_arch "${BIN_OPT[@]}"
+      return $?
+    ;;
+    install)
+      __duct_bin_install "${BIN_OPT[@]}"
+      return $?
+    ;;
+    *)
+      return 1
+    ;;
+  esac
+}
+
+# set-arch <arch>arch>
+__duct_bin_set_arch() {
+  local SET_ARCH="${1:-}"
+  local SRC_ARCH
+  local DST_ARCH
+
+  local _HOSTTYPE="$HOSTTYPE"
+  local _OSTYPE="$OSTYPE"
+
+  if [[ -n "$SET_ARCH" ]]
+  then
+    SRC_ARCH="${SET_ARCH%%>*}"
+    DST_ARCH="${SET_ARCH##*>}"
+
+    if [[ "$_HOSTTYPE" == "$SRC_ARCH" ]]
+    then
+      _HOSTTYPE="$DST_ARCH"
+    fi
+  fi
+
+  # os type without version and -gnu
+  _OSTYPE="${_OSTYPE%%[0-9.]*}"
+  _OSTYPE="${_OSTYPE%%-gnu}"
+
+  echo "${_OSTYPE}-${_HOSTTYPE}"
+}
+
+# bin check <list[@]>
+__duct_bin_check() {
+  local BIN
+  local BIN_LIST=("$@")
+  local BIN_PATH
+  local BIN_RC
+  local BIN_VERSION
+
+  if [[ ${#BIN_LIST[@]} -eq 0 ]]
+  then
+    __duct_msg w "empty binary list!"
+  fi
+
+  for BIN in "${BIN_LIST[@]}"
+  do
+    BIN_PATH=$(command -v "$BIN" || :)
+
+    if [[ -n "$BIN_PATH" ]]
+    then
+      BIN_RC=0
+      __duct_msg d "testing '$BIN_PATH --version'"
+
+      # shellcheck disable=SC2034
+      BIN_VERSION="$(command "$BIN_PATH" --version 2>&1)" || BIN_RC=$?
+
+      case "$BIN_RC" in
+        127)
+          __duct_msg w "'$BIN_PATH' found, but command returned 127 (not found)!"
+          ;;
+        *)
+          __duct_msg d "'$BIN_PATH' found."
+          ;;
+      esac
+    else
+      __duct_msg e "'$BIN' not found!"
+      return 1
+    fi
+  done
+}
+
+# bin check gnu <list[@]>
+__duct_bin_check_gnu() {
+  local GNU
+  local GNU_LIST=("$@")
+  local GNU_VERSION
+
+  if [[ ${#GNU_LIST[@]} -eq 0 ]]
+  then
+    __duct_msg w "empty gnu list!"
+  fi
+
+  for GNU in "${GNU_LIST[@]}"
+  do
+    GNU_VERSION="$(command "$GNU" --version 2>&1 | head -n1 || :)"
+
+    if [[ ! "$GNU_VERSION" =~ GNU ]]
+    then
+      __duct_msg w "$GNU is not a GNU version!"
+    else
+      __duct_msg d "$GNU is a GNU version."
+    fi
+  done
+}
+
+# bin check gnutools
+__duct_bin_check_gnutools() {
+  case "$OSTYPE" in
+    darwin*)
+      DUCT_GREP="ggrep"
+      DUCT_SED="gsed"
+      ;;
+    freebsd*)
+      DUCT_GREP="grep"
+      DUCT_SED="gsed"
+      ;;
+    linux*)
+      DUCT_GREP="grep"
+      DUCT_SED="sed"
+      ;;
+    *)
+      __duct_msg e "$OSTYPE is unsupported!"
+      ;;
+  esac
+
+  DUCT_GNUTOOLS_BIN=( "${DUCT_GNUTOOLS_BIN[@]//grep/$DUCT_GREP}" )
+  DUCT_GNUTOOLS_BIN=( "${DUCT_GNUTOOLS_BIN[@]//sed/$DUCT_SED}" )
+
+  __duct_bin_check "${DUCT_GNUTOOLS_BIN[@]}"
+  __duct_bin_check_gnu "${DUCT_GNUTOOLS_BIN[@]}"
+
+  export DUCT_GREP
+  export DUCT_SED
+}
+
+# grep
+__duct_grep() {
+  if [[ "${FUNCNAME[1]}" == "duct" ]]
+  then
+    # external
+    __duct_run $DUCT_GREP "$@"
+  else
+    # internal
+    $DUCT_GREP "$@"
+  fi
+}
+
+# sed
+__duct_sed() {
+  if [[ "${FUNCNAME[1]}" == "duct" ]]
+  then
+    # external
+    __duct_run $DUCT_SED "$@"
+  else
+    # internal
+    $DUCT_SED "$@"
+  fi
+}
+
+# unarchive <archive> <files@>
+__duct_bin_unarchive() {
+  local ARCHIVE="$1"; shift
+  local -a FILES=( "$@" )
+
+  for FILE in "${FILES[@]}"
+  do
+    SRC_FILE="${FILE%%:*}"
+    DST_FILE="${FILE##*:}"
+
+    STRIP_PATH=0
+    XOPTS=()
+
+    __duct_msg n "installing ${ARCHIVE} file ${SRC_FILE} to ${DUCT_BIN_INSTALL_DIR}/${DST_FILE}"
+
+    case "$ARCHIVE" in
+      *.tar.gz|*.tar.xz)
+        # get / count
+        STRIP_PATH=$(awk -F"/" '{print NF-1}' <<< "$FILE")
+        if [[ $STRIP_PATH -ge 1 ]]
+        then
+          XOPTS+=(--strip-components="$STRIP_PATH")
+        fi
+        __duct_run tar -xf "${DUCT_TMP_DIR}/${ARCHIVE}" -C "$DUCT_BIN_INSTALL_DIR" "${XOPTS[@]}" "$SRC_FILE"
+        ;;
+      *.zip)
+        __duct_run unzip -oqq "${DUCT_TMP_DIR}/${ARCHIVE}" "$SRC_FILE" -d "$DUCT_BIN_INSTALL_DIR" "${XOPTS[@]}"
+        ;;
+      *)
+        ARCHIVE_TYPE="$(file -b --mime-type "${DUCT_TMP_DIR}/${ARCHIVE}")"
+        if [[ "$ARCHIVE_TYPE" =~ (executable|binary) ]]
+        then
+          __duct_run install -m "$DUCT_BIN_INSTALL_MODE" "${DUCT_TMP_DIR}/${ARCHIVE}" "${DUCT_BIN_INSTALL_DIR}/${DST_FILE}"
+        else
+          __duct_msg e "unsuported archive type $ARCHIVE"
+          return 1
+        fi
+    esac
+    if [[ "$STRIP_PATH" -ge 1 ]]
+    then
+      SRC_FILE="${SRC_FILE##*/}"
+    fi
+
+    if [[ "$SRC_FILE" != "$DST_FILE" ]]
+    then
+      __duct_run mv "${DUCT_BIN_INSTALL_DIR}/${SRC_FILE}" "${DUCT_BIN_INSTALL_DIR}/${DST_FILE}"
+    fi
+    __duct_run chmod "$DUCT_BIN_INSTALL_MODE" "${DUCT_BIN_INSTALL_DIR}/${DST_FILE}"
+  done
+  __duct_run rm -f "${DUCT_TMP_DIR:?}/${ARCHIVE:?}"
+}
+
+# install
+__duct_bin_install() {
+  local BIN_TYPE="$1"
+  local BIN_URL
+
+  case "$BIN_TYPE"
+  in
+    github)
+      BIN_URL="https://github.com/${DUCT_BIN_INSTALL_NAMESPACE}/releases/download/${DUCT_BIN_INSTALL_VERSION}/${DUCT_BIN_INSTALL_ARCHIVE}"
+      __duct_github_curl "$BIN_URL" -o "${DUCT_TMP_DIR}/${DUCT_BIN_INSTALL_ARCHIVE}"
+      ;;
+    terraform)
+      BIN_URL="https://releases.hashicorp.com/terraform/${DUCT_BIN_INSTALL_VERSION}/${DUCT_BIN_INSTALL_ARCHIVE}"
+      __duct_curl "$BIN_URL" -o "${DUCT_TMP_DIR}/${DUCT_BIN_INSTALL_ARCHIVE}"
+      ;;
+    *)
+      __duct_msg e "unsupported type $BIN_TYPE"
+      return 1
+      ;;
+  esac
+  __duct_bin_unarchive "$DUCT_BIN_INSTALL_ARCHIVE" "${DUCT_BIN_INSTALL_FILES[@]}"
+}

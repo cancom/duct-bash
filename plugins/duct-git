@@ -1,0 +1,352 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+
+# duct-git
+
+declare DUCT_GIT_CONFIG="${GIT_CONFIG:-"$HOME/.gitconfig"}"
+declare DUCT_GIT_CONFIG_DONE=false
+
+declare DUCT_GIT_USER_NAME="${GIT_USER_NAME:-""}"
+declare DUCT_GIT_USER_EMAIL="${GIT_USER_EMAIL:-""}"
+declare DUCT_GIT_USER_TOKEN="${GIT_USER_TOKEN:-""}"
+
+declare DUCT_GIT_USER_AUTH="${GIT_USER_AUTH:-""}"
+declare DUCT_GIT_HOST_AUTH="${GIT_HOST_AUTH:-"https://github.com"}"
+
+declare DUCT_GIT_SSH_AUTH="${GIT_SSH_AUTH:-false}"
+declare DUCT_GIT_CREDENTIAL_HELPER="store"
+declare DUCT_GIT_CREDENTIAL_HELPER_FILE="$HOME/.git-credentials" # store
+declare DUCT_GIT_CREDENTIAL_HELPER_FILE_OVERWRITE=false
+
+declare DUCT_GIT_DEFAULT_BRANCH="${GIT_DEFAULT_BRANCH:-"main"}"
+declare DUCT_GIT_DEFAULT_REMOTE="${GIT_DEFAULT_REMOTE:-"origin"}"
+
+declare -a DUCT_GIT_CLONE_OPTS=(
+  --progress
+)
+declare DUCT_GIT_CLONE_BRANCH="$DUCT_GIT_DEFAULT_BRANCH"
+declare DUCT_GIT_CLONE_REMOTE="$DUCT_GIT_DEFAULT_REMOTE"
+declare DUCT_GIT_CLONE_PULL=true
+declare -a DUCT_GIT_PULL_OPTS=(
+  "${DUCT_GIT_CLONE_OPTS[@]}"
+)
+
+declare -a DUCT_GIT_COMMIT_OPTS=(
+  --verbose
+)
+declare DUCT_GIT_COMMIT_GPG_SIGN=false
+declare DUCT_GIT_COMMIT_BRANCH="$DUCT_GIT_DEFAULT_BRANCH"
+declare DUCT_GIT_COMMIT_REMOTE="$DUCT_GIT_DEFAULT_REMOTE"
+declare DUCT_GIT_COMMIT_PUSH=true
+
+# git <command>
+__duct_git() {
+  local GIT_CMD="${1:-}"
+  shift
+  local -a GIT_OPT=( "$@" )
+
+  case "$GIT_CMD"
+  in
+    config)
+      __duct_git_config "${GIT_OPT[@]}"
+      return $?
+    ;;
+
+    auth)
+      __duct_git_auth "${GIT_OPT[@]}"
+      return $?
+    ;;
+
+    clone)
+      __duct_git_clone "${GIT_OPT[@]}"
+      return $?
+    ;;
+
+    commit)
+      __duct_git_commit "${GIT_OPT[@]}"
+      return $?
+    ;;
+
+    strip-remote|strip_remote)
+      __duct_git_strip_remote
+      return $?
+    ;;
+  esac
+}
+
+# git config
+__duct_git_config() {
+  local GIT_ERROR=0
+
+  if [[ -f "$DUCT_GIT_CONFIG" ]]
+  then
+    __duct_msg w "$DUCT_GIT_CONFIG exists, not changing!"
+    export DUCT_GIT_CONFIG_DONE=true
+    return 0
+  fi
+
+  if [[ -z "$DUCT_GIT_USER_NAME" ]]
+  then
+    __duct_msg e "[DUCT_] GIT_USER_NAME is unset!"
+    (( GIT_ERROR+=1 ))
+  fi
+
+  if [[ -z "$DUCT_GIT_USER_EMAIL" ]]
+  then
+    __duct_msg e "[DUCT_] GIT_USER_EMAIL is unset!"
+    (( GIT_ERROR+=1 ))
+  fi
+
+  if [[ "$GIT_ERROR" -gt 0 ]]
+  then
+    return 1
+  fi
+
+  local _DEFAULT_BRANCH
+  local _USER_NAME
+  local _USER_EMAIL
+
+  _DEFAULT_BRANCH="$(git config --get init.defaultBranch || :)"
+  if [[ -z "$_DEFAULT_BRANCH" ]]
+  then
+    __duct_msg d "no default branch!"
+  else
+    __duct_msg d "current default branch: '$_DEFAULT_BRANCH'"
+  fi
+
+  _USER_NAME="$(git config --get user.name || :)"
+  if [[ -z "$_USER_NAME" ]]
+  then
+    __duct_msg d "no user name!"
+  else
+    __duct_msg d "current user name: '$_USER_NAME'"
+  fi
+
+  _USER_EMAIL="$(git config --get user.email || :)"
+  if [[ -z "$_USER_EMAIL" ]]
+  then
+    __duct_msg d "no user email!"
+  else
+    __duct_msg d "user email: '$_USER_EMAIL'"
+  fi
+
+  if [[ "$DUCT_GIT_DEFAULT_BRANCH" != "$_DEFAULT_BRANCH" ]]
+  then
+    __duct_msg n "setting default branch: '$_DEFAULT_BRANCH' to '$DUCT_GIT_DEFAULT_BRANCH'"
+    GIT_CONFIG="$DUCT_GIT_CONFIG" \
+    __duct_run git config init.defaultBranch "$DUCT_GIT_DEFAULT_BRANCH"
+  fi
+
+  if [[ "$DUCT_GIT_USER_NAME" != "$_USER_NAME" ]]
+  then
+    __duct_msg n "setting user name: '$_USER_NAME' to '$DUCT_GIT_USER_NAME'"
+    GIT_CONFIG="$DUCT_GIT_CONFIG" \
+    __duct_run git config user.name "$DUCT_GIT_USER_NAME"
+  fi
+
+  if [[ "$DUCT_GIT_USER_EMAIL" != "$_USER_EMAIL" ]]
+  then
+    __duct_msg n "setting user email: '$_USER_EMAIL' to '$DUCT_GIT_USER_EMAIL'"
+    GIT_CONFIG="$DUCT_GIT_CONFIG" \
+    __duct_run git config user.email "$DUCT_GIT_USER_EMAIL"
+  fi
+
+  export DUCT_GIT_CONFIG_DONE=true
+  return 0
+}
+
+# git auth
+__duct_git_auth() {
+  local GIT_ERROR=0
+
+  if [[ $DUCT_GIT_CONFIG_DONE == false ]]
+  then
+    __duct_msg e "run 'duct git config' first!"
+    (( GIT_ERROR+=1 ))
+  fi
+
+  if [[ -z "$DUCT_GIT_USER_TOKEN" ]]
+  then
+    __duct_msg e "[DUCT_] GIT_USER_TOKEN is unset!"
+    (( GIT_ERROR+=1 ))
+  fi
+
+  if [[ $GIT_ERROR -gt 0 ]]
+  then
+    return 1
+  fi
+
+  if [[ "$DUCT_GIT_SSH_AUTH" == false ]]
+  then
+    local _CREDENTIAL_HELPER
+    _CREDENTIAL_HELPER="$(git config --get credential.helper || :)"
+    if [[ -z "$_CREDENTIAL_HELPER" ]]
+    then
+      __duct_msg d "no credential helper"
+    else
+      __duct_msg d "current credential helper: $_CREDENTIAL_HELPER"
+    fi
+
+    if [[ -z "$DUCT_GIT_USER_AUTH" ]]
+    then
+      DUCT_GIT_USER_AUTH="$(__duct_slug "$DUCT_GIT_USER_NAME")"
+    fi
+
+    if [[ "$_CREDENTIAL_HELPER" != "$DUCT_GIT_CREDENTIAL_HELPER" ]]
+    then
+      __duct_msg n "setting credential helper: '$_CREDENTIAL_HELPER' to '$DUCT_GIT_CREDENTIAL_HELPER'"
+      GIT_CONFIG="$DUCT_GIT_CONFIG" \
+      __duct_run git config credential.helper "$DUCT_GIT_CREDENTIAL_HELPER"
+    fi
+
+    if [[ "$DUCT_GIT_CREDENTIAL_HELPER" == "store" ]]
+    then
+      local _SCHEME="${DUCT_GIT_HOST_AUTH%%/*}"
+      local _HOST="${DUCT_GIT_HOST_AUTH##*/}"
+
+      DUCT_GIT_USER_TOKEN="$(__duct_base64 "$DUCT_GIT_USER_TOKEN")"
+      DUCT_SFILE_OVERWRITE="$DUCT_GIT_CREDENTIAL_HELPER_FILE_OVERWRITE" \
+      __duct_sfile "$DUCT_GIT_CREDENTIAL_HELPER_FILE" 0600 "${_SCHEME}//${DUCT_GIT_USER_AUTH}:${DUCT_GIT_USER_TOKEN}@${_HOST}"
+    fi
+  else
+    __duct_msg n "using ssh auth"
+  fi
+}
+
+# pull <path> [git-url]
+__duct_git_pull() {
+  local GIT_PATH="${1:-}"
+  local GIT_URL="${2:-}"
+
+  if [[ -z "$GIT_PATH" ]]
+  then
+    __duct_msg e "no git path!"
+    return 1
+  fi
+
+  if [[ -d "${GIT_PATH}/.git" ]]
+  then
+    (
+      cd "$GIT_PATH" || return
+
+      if [[ -n "$GIT_URL" ]]
+      then
+        local _GIT_URL
+        _GIT_URL="$(duct run git remote get-url "$DUCT_GIT_CLONE_REMOTE" 2>/dev/null || :)"
+
+        if [[ -z "$_GIT_URL" ]]
+        then
+          __duct_msg i "no such remote $DUCT_GIT_CLONE_REMOTE"
+          __duct_msg i "setting $DUCT_GIT_CLONE_REMOTE to $GIT_URL"
+          __duct_run git remote add "$DUCT_GIT_CLONE_REMOTE" "$GIT_URL"
+
+        elif [[ "$_GIT_URL" != "$GIT_URL" ]]
+        then
+          __duct_msg e "url mismatch: ${DUCT_GIT_CLONE_REMOTE}:${_GIT_URL} ! ${DUCT_GIT_CLONE_REMOTE}:${GIT_URL}"
+          return 1
+        fi
+      fi
+
+      __duct_msg n "pulling $GIT_PATH from ${DUCT_GIT_CLONE_REMOTE}:${GIT_URL}:${DUCT_GIT_CLONE_BRANCH}"
+      __duct_run git pull "${DUCT_GIT_PULL_OPTS[@]}" "$DUCT_GIT_CLONE_REMOTE" "$DUCT_GIT_CLONE_BRANCH"
+    )
+  else
+    __duct_msg e "$GIT_PATH not a git repository!"
+  fi
+}
+
+# clone <git-url> [[P:]path]
+__duct_git_clone() {
+  local GIT_URL="${1:-}"
+  local GIT_PATH="${2:-}"
+  local GIT_NAME
+
+  if [[ -z "$GIT_URL" ]]
+  then
+    __duct_msg e "no git url!"
+    return 1
+  fi
+
+  GIT_NAME="${GIT_URL##*/}"
+  GIT_NAME="${GIT_NAME//.git}"
+
+  if [[ -z "$GIT_PATH" ]]
+  then
+    GIT_PATH="${PWD}/${GIT_NAME}"
+
+  elif [[ "$GIT_PATH" =~ ^P: ]]
+  then
+    GIT_PATH="${GIT_PATH//P:}/${GIT_NAME}"
+  fi
+
+  if [[ ! -d "$GIT_PATH" ]]
+  then
+    __duct_msg n "cloning ${DUCT_GIT_CLONE_REMOTE}:${GIT_URL}:${DUCT_GIT_CLONE_BRANCH} to $GIT_PATH"
+    __duct_run git clone "${DUCT_GIT_CLONE_OPTS[@]}" --origin "$DUCT_GIT_CLONE_REMOTE" --branch "$DUCT_GIT_CLONE_BRANCH" "$GIT_URL" "$GIT_PATH"
+    return $?
+  else
+    if [[ "$DUCT_GIT_CLONE_PULL" == true ]]
+    then
+      __duct_git_pull "${GIT_PATH}" "${GIT_URL}"
+      return $?
+    fi
+  fi
+}
+
+# git commit <message> <@files>
+__duct_git_commit() {
+  local GIT_MSG="${1:-}"
+  shift
+  local GIT_FILE=( "$@" )
+
+  if [[ "$DUCT_GIT_COMMIT_GPG_SIGN" == true ]]
+  then
+    DUCT_GIT_COMMIT_OPTS+=( --gpg-sign )
+  fi
+
+  local _BRANCH
+  _BRANCH="$( git branch --show-current )"
+
+  if [[ "$DUCT_GIT_COMMIT_BRANCH" != "$_BRANCH" ]]
+  then
+    __duct_run git checkout -B "$DUCT_GIT_COMMIT_BRANCH"
+  fi
+
+  __duct_run git add "${GIT_FILE[@]}"
+
+  local _STATUS
+  _STATUS="$( git status --porcelain )"
+
+  if [[ -n "$_STATUS" ]]
+  then
+    __duct_run git commit "${DUCT_GIT_COMMIT_OPTS[@]}" --message="$GIT_MSG" "${GIT_FILE[@]}"
+
+    if [[ "$DUCT_GIT_COMMIT_PUSH" == true ]]
+    then
+      __duct_run git push --set-upstream "$DUCT_GIT_COMMIT_REMOTE" "$DUCT_GIT_COMMIT_BRANCH"
+    fi
+  else
+    __duct_msg n "nothing to commit"
+  fi
+}
+
+# strip-remote
+__duct_git_strip_remote() {
+  local GIT_REMOTE
+
+  if [[ ! -d .git ]]
+  then
+    __duct_msg e "not a git repository!"
+    exit 1
+  fi
+
+  if [[ $DUCT_GIT_SSH_AUTH == false ]]
+  then
+    GIT_REMOTE=$(git remote get-url --push "$DUCT_GIT_DEFAULT_REMOTE")
+    # shellcheck disable=SC2001
+    GIT_REMOTE=$(__duct_sed -e "s?\(https://\)\(.*\)@\(.*\)?\1\3?g" <<< "$GIT_REMOTE")
+
+    __duct_msg n "setting remote $DUCT_GIT_DEFAULT_REMOTE to $GIT_REMOTE"
+    __duct_run git remote set-url "$DUCT_GIT_DEFAULT_REMOTE" "$GIT_REMOTE"
+  fi
+}

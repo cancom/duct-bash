@@ -1,0 +1,11 @@
+---
+# collections
+collections:
+  - name: community.general
+    version: 4.0.0
+
+# roles
+roles:
+  - name: motd
+    src: sh0shin.motd
+    version: 0.0.2

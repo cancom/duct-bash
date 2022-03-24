@@ -1,0 +1,421 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+
+# duct-helper
+
+declare -a DUCT_RANDOM_CHARS=(
+  "ABCDEFGHJKLMNPQRSTUVWX"
+  "abcdefghijkmnpqrstuvwx"
+  "123456789"
+  "!$%,."
+)
+
+declare DUCT_SFILE_MODE=0600
+declare DUCT_SFILE_OVERWRITE=false
+
+declare DUCT_TMPGEN_PREFIX="duct-"
+declare DUCT_TMPGEN_PATH="$DUCT_TMP_DIR"
+declare DUCT_TMPGEN_LENGTH=9
+
+declare DUCT_MKTMPDIR_PREFIX="duct-"
+declare DUCT_MKTMPDIR_PATH="$DUCT_TMP_DIR"
+declare DUCT_MKTMPDIR_MODE=0700
+
+declare DUCT_MKTMPFILE_PREFIX="duct-"
+declare DUCT_MKTMPFILE_PATH="$DUCT_TMP_DIR"
+declare DUCT_MKTMPFILE_MODE=0600
+
+# basename <name>
+__duct_basename() {
+  local NAME="$1"
+  echo "${NAME##*/}"
+}
+
+# dirname <name>
+__duct_dirname() {
+  local NAME="$1"
+  echo "${NAME%/*}"
+}
+
+# lower <name>
+__duct_lower() {
+  local NAME="$1"
+  echo "${NAME,,}"
+}
+
+# upper <name>
+__duct_upper() {
+  local NAME="$1"
+  echo "${NAME^^}"
+}
+
+# slug <name>
+__duct_slug() {
+  local NAME="$1"
+  NAME="${NAME,,}" # lower
+  NAME="${NAME// /-}" # whitespace to -
+  echo "$NAME"
+}
+
+# strip array <strip-regex> <array[@]>
+__duct_strip_array() {
+  local STRIP="$1"
+  shift
+  local -a ARRAY=( "$@" )
+
+  for _ARRAY in "${ARRAY[@]}"
+  do
+    if [[ ! "$_ARRAY" =~ $STRIP ]]
+    then
+      echo "$_ARRAY"
+    fi
+  done
+}
+
+# sort array <array[@]>
+__duct_sort_array() {
+  local -a ARRAY=( "$@" )
+  local IFS=$'\n'
+
+  readarray -t ARRAY < <(sort --version-sort <<< "${ARRAY[*]}")
+  echo "${ARRAY[*]}"
+}
+
+# base64 <string>
+__duct_base64() {
+  local BASE64_STR="${1:-}"
+  local BASE64_PAT="[A-Za-z0-9+/]{4}*([A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)"
+
+  if [[ -n "$BASE64_STR" ]]
+  then
+    if __duct_grep -qE "$BASE64_PAT" <<< "$BASE64_STR"
+    then
+      __duct_msg d "base64 string"
+      echo "$BASE64_STR" | base64 -d
+    else
+      __duct_msg d "plain string"
+      echo "$BASE64_STR"
+    fi
+  else
+    __duct_msg e "empty string!"
+    return 1
+  fi
+}
+
+# sfile <filename> <mode> <content>
+__duct_sfile() {
+  local FILE="${1:-}"
+  shift
+  local MODE="${1:-"$DUCT_SFILE_MODE"}"
+  shift
+  local -a CONT=( "$@" )
+
+  if [[ -z "$FILE" ]]
+  then
+    __duct_msg e "no filename!"
+    return 1
+  fi
+
+  if [[ -f "$FILE" ]]
+  then
+    if [[ "$DUCT_SFILE_OVERWRITE" == true ]]
+    then
+      __duct_msg w "$FILE exists, overwriting!"
+    else
+      __duct_msg w "$FILE exists, not changing!"
+      return 0
+    fi
+  fi
+
+  local -a _CONT=( "${CONT[@]}" )
+  if [[ "$DUCT_MASK" == true ]]
+  then
+    _CONT=( "$DUCT_MASK_STR" )
+  fi
+
+  if [[ "$DUCT_DRY_RUN" == true ]]
+  then
+    __duct_msg x "[DRY-RUN] creating $FILE with content: ${_CONT[*]}"
+  else
+    __duct_msg n "creating $FILE with content: ${_CONT[*]}"
+    echo "${CONT[*]}" > "$FILE"
+    chmod "$MODE" "$FILE"
+  fi
+}
+
+# clean <list@>
+__duct_clean() {
+  local CLEAN_LIST=( "$@" )
+  local CLEAN
+
+  if [[ ${#CLEAN_LIST[@]} -eq 0 ]]
+  then
+    __duct_msg w "empty clean list!"
+    return 0
+  else
+    for CLEAN in "${CLEAN_LIST[@]}"
+    do
+      if [[ -d "${CLEAN:?}" ]]
+      then
+        __duct_msg n "removing dir ${CLEAN:?}"
+        __duct_run rm -fr "${CLEAN:?}"
+
+      elif [[ -f "${CLEAN:?}" ]]
+      then
+        __duct_msg n "removing file ${CLEAN:?}"
+        __duct_run rm -f "${CLEAN:?}"
+      else
+        __duct_msg w "${CLEAN:?} not found!"
+      fi
+    done
+  fi
+}
+
+# random <length>
+__duct_random() {
+  local RANDOM_LEN="${1:-16}"
+  local -a RANDOM_CHARS=( "${DUCT_RANDOM_CHARS[@]}" )
+  readarray -t RANDOM_CHARS < <(__duct_grep -Po '[^\s]' <<< "${RANDOM_CHARS[*]}")
+  local RANDOM_STR=""
+
+  for ((I=0; I<RANDOM_LEN; I++))
+  do
+    if [[ "$DUCT_BASH_SRANDOM" == true ]]
+    then
+      RANDOM_STR+="${RANDOM_CHARS[$((SRANDOM%${#RANDOM_CHARS[@]}))]}"
+    else
+      RANDOM_STR+="${RANDOM_CHARS[$((RANDOM%${#RANDOM_CHARS[@]}))]}"
+    fi
+  done
+  echo "$RANDOM_STR"
+}
+
+# tmpgen [<prefix>] [<path>]
+__duct_tmpgen() {
+  local TMP_PREFIX="${1:-"$DUCT_TMPGEN_PREFIX"}"
+  local TMP_PATH="${2:-"$DUCT_TMPGEN_PATH"}"
+  local TMP_GEN
+  local TMP_RC=0
+
+  TMP_GEN="${TMP_PATH}/${TMP_PREFIX}$(
+    export DUCT_RANDOM_CHARS=(
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      "abcdefghijklmnopqrstuvwxyz"
+      "0123456789"
+    )
+    __duct_random "$DUCT_TMPGEN_LENGTH"
+  )" || TMP_RC=$?
+
+  echo "$TMP_GEN"
+}
+
+# mktmpdir [<prefix>] [<path>]
+__duct_mktmpdir() {
+  local TMP_PREFIX="${1:-"$DUCT_MKTMPDIR_PREFIX"}"
+  local TMP_PATH="${2:-"$DUCT_MKTMPDIR_PATH"}"
+  local TMP_DIR
+  local TMP_RC=0
+
+  TMP_DIR="$( __duct_tmpgen "$TMP_PREFIX" "$TMP_PATH" )"
+  __duct_msg n "creating ${TMP_DIR}"
+  __duct_run mkdir -m "$DUCT_MKTMPDIR_MODE" -p "$TMP_DIR" || TMP_RC=$?
+  echo "$TMP_DIR"
+  return $TMP_RC
+}
+
+# mktmpfile [<prefix>] [<path>]
+__duct_mktmpfile() {
+  local TMP_PREFIX="${1:-"$DUCT_MKTMPFILE_PREFIX"}"
+  local TMP_PATH="${2:-"$DUCT_MKTMPFILE_PATH"}"
+  local TMP_FILE
+  local TMP_RC=0
+
+  TMP_FILE="$( __duct_tmpgen "$TMP_PREFIX" "$TMP_PATH" )"
+  __duct_msg n "creating ${TMP_FILE}"
+  (
+    __duct_run touch "$TMP_FILE" || TMP_RC=$?
+    __duct_run chmod "$DUCT_MKTMPFILE_MODE" "$TMP_FILE"
+  ) || TMP_RC=$?
+  echo "$TMP_FILE"
+  return $TMP_RC
+}
+
+# date <format>
+__duct_date() {
+  local FORMAT="${1-"%Y-%m-%d %H:%M:%S"}"
+  printf "%($FORMAT)T\\n" "-1"
+}
+
+# find <path> [type] [match|regex]
+__duct_find() {
+  local FIND_ROOT="${1:-"."}"
+  local FIND_TYPE="${2:-}"
+  local FIND_MATCH="${3:-}"
+
+  shopt -s globstar
+  shopt -s dotglob
+
+  __duct_msg d "searching $FIND_ROOT type:${FIND_TYPE:-"all"} match:${FIND_MATCH:-"all"}"
+
+  for FIND in "${FIND_ROOT}"/**/*
+  do
+
+    # type
+    if [[ -n "${FIND_TYPE}" ]]
+    then
+      case "$FIND_TYPE"
+      in
+        d|dir|directory)
+          if [[ ! -d "$FIND" ]]
+          then
+            continue
+          fi
+        ;;
+        f|file)
+          if [[ ! -f "$FIND" ]]
+          then
+            continue
+          fi
+        ;;
+      esac
+    fi
+
+    # match
+    if [[ -n "$FIND_MATCH" ]]
+    then
+      if [[ ! "$FIND" =~ $FIND_MATCH ]]
+      then
+        continue
+      fi
+    fi
+
+    echo "$FIND"
+  done
+
+  shopt -u globstar
+  shopt -u dotglob
+
+  __duct_msg d "runtime: ${SECONDS}s"
+}
+
+# textract <file> <marker begin> <marker end>
+__duct_textract() {
+  local TEXT_FILE="${1:-}"
+  local TEXT_BEGIN="${2:-}"
+  local TEXT_END="${3:-}"
+  local -a TEXT_CONTENT
+  local TEXT_LINE
+  local TEXT_PRINT=0
+  local TEXT_ERROR=0
+
+  if [[ -z "$TEXT_FILE" ]]
+  then
+    __duct_msg e "no file!"
+    (( TEXT_ERROR+=1 ))
+  fi
+
+  if [[ -z "$TEXT_BEGIN" ]]
+  then
+    __duct_msg e "no marker begin!"
+    (( TEXT_ERROR+=1 ))
+  fi
+
+  if [[ -z "$TEXT_END" ]]
+  then
+    __duct_msg e "no marker end!"
+    (( TEXT_ERROR+=1 ))
+  fi
+
+  if [[ $TEXT_ERROR -gt 0 ]]
+  then
+    return 1
+  fi
+
+  if [[ ! -f "$TEXT_FILE" ]]
+  then
+    __duct_msg d "using variable input"
+    readarray -t TEXT_CONTENT <<< "$TEXT_FILE"
+  else
+    __duct_msg d "using file $TEXT_FILE"
+    readarray -t TEXT_CONTENT < "$TEXT_FILE"
+  fi
+
+  for TEXT_LINE in "${TEXT_CONTENT[@]}"
+  do
+    if [[ "$TEXT_PRINT" -eq 1 ]] && [[ "$TEXT_LINE" != "$TEXT_END" ]]
+    then
+      echo "$TEXT_LINE"
+    fi
+
+    if [[ $TEXT_LINE == "$TEXT_BEGIN" ]]
+    then
+      __duct_msg d "found $TEXT_BEGIN"
+      TEXT_PRINT=1
+    fi
+
+    if [[ $TEXT_LINE == "$TEXT_END" ]]
+    then
+      __duct_msg d "found $TEXT_END"
+      TEXT_PRINT=0
+    fi
+  done
+}
+
+# compversion <version1> <version2>
+__duct_compversion() {
+  local VERSION_1="${1:-}"
+  local VERSION_2="${2:-}"
+
+  local VERSION_1_PREFIX=""
+  local VERSION_2_PREFIX=""
+
+  local IFS=.
+  local I
+
+  if [[ "$VERSION_1" =~ ^v ]]
+  then
+    VERSION_1="${VERSION_1//v}"
+    VERSION_1_PREFIX="v"
+  fi
+
+  if [[ "$VERSION_2" =~ ^v ]]
+  then
+    VERSION_2="${VERSION_2//v}"
+    VERSION_2_PREFIX="v"
+  fi
+
+  # to array
+  read -ra VERSION_1 <<< "$VERSION_1"
+  read -ra VERSION_2 <<< "$VERSION_2"
+
+  for ((I=${#VERSION_1[@]}; I<${#VERSION_2[@]}; I++))
+  do
+    VERSION_1[I]=0
+  done
+
+  for ((I=0; I<${#VERSION_1[@]}; I++))
+  do
+    if [[ -z ${VERSION_2[I]} ]]
+    then
+      VERSION_2[I]=0
+    fi
+
+    if ((10#${VERSION_1[I]} > 10#${VERSION_2[I]}))
+    then
+      __duct_msg d "${VERSION_1_PREFIX}${VERSION_1[*]} > ${VERSION_2_PREFIX}${VERSION_2[*]}"
+      echo "${VERSION_1_PREFIX}${VERSION_1[*]}"
+      return
+    fi
+
+    if ((10#${VERSION_1[I]} < 10#${VERSION_2[I]}))
+    then
+      __duct_msg d "${VERSION_1_PREFIX}${VERSION_1[*]} > ${VERSION_2_PREFIX}${VERSION_2[*]}"
+      echo "${VERSION_2_PREFIX}${VERSION_2[*]}"
+      return
+    fi
+  done
+
+  __duct_msg d "${VERSION_1_PREFIX}${VERSION_1[*]} = ${VERSION_2_PREFIX}${VERSION_2[*]}"
+  echo "${VERSION_1_PREFIX}${VERSION_1[*]}"
+  return
+}

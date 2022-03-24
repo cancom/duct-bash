@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+
+# duct-github
+
+DUCT_GITHUB_USER="${GITHUB_USER:-""}"
+DUCT_GITHUB_TOKEN="${GITHUB_TOKEN:-""}"
+
+# github
+__duct_github() {
+  local GH_CMD="${1:-}"; shift
+  local -a GH_OPT=( "$@" )
+
+  case "$GH_CMD"
+  in
+    curl)
+      __duct_github_curl "${GH_OPT[@]}"
+      return $?
+    ;;
+    latest|latest-version)
+      __duct_github_latest "${GH_OPT[@]}"
+      return $?
+    ;;
+  esac
+}
+
+# github curl
+__duct_github_curl() {
+  local GH_URL=( "$@" )
+  local GH_RC=0
+  local GH_WARN=0
+  local GH_TOKEN
+  local -a GH_CURL_OPTS=()
+
+  if [[ -z "$DUCT_GITHUB_USER" ]]
+  then
+    duct msg w "[DUCT_]GITHUB_USER is unset!"
+    (( GH_WARN+=1 ))
+  fi
+
+  if [[ -z "$DUCT_GITHUB_TOKEN" ]]
+  then
+    duct msg w "[DUCT_]GITHUB_TOKEN is unset!"
+    (( GH_WARN+= 1 ))
+  fi
+
+  if [[ "$GH_WARN" -eq 0 ]]
+  then
+    GH_TOKEN=$(__duct_base64 "$DUCT_GITHUB_TOKEN")
+    GH_CURL_OPTS+=( "-u ${DUCT_GITHUB_USER}:${GH_TOKEN}" )
+  fi
+  __duct_curl "${GH_CURL_OPTS[@]}" "${GH_URL[@]}" || GH_RC=$?
+  return $GH_RC
+}
+
+# github latest <github namespace> [value|export]
+__duct_github_latest() {
+  local GH_VER_NAMESPACE="$1"
+  local GH_VER_MODE="${2:-"value"}"
+
+  local GH_VER_RELEASE_URL="https://api.github.com/repos/${GH_VER_NAMESPACE}/releases/latest"
+  local GH_VER_RELEASE_INFO
+  local GH_VER_RELEASE
+
+  local GH_VER_TAG_URL="https://api.github.com/repos/${GH_VER_NAMESPACE}/tags"
+  local GH_VER_TAG_INFO
+  local GH_VER_TAG
+  local GH_VER_ERROR=0
+
+  GH_VER_RELEASE_INFO="$(DUCT_DRY_RUN=false __duct_github_curl "$GH_VER_RELEASE_URL")"
+  GH_VER_TAG_INFO="$(DUCT_DRY_RUN=false __duct_github_curl "$GH_VER_TAG_URL")"
+  GH_VER_RELEASE=$(echo "$GH_VER_RELEASE_INFO" | jq -M -r '.tag_name' 2>/dev/null || :)
+  GH_VER_TAG=$(echo "$GH_VER_TAG_INFO" | jq -M -r '.[].name' | sort -Vr | head -n1 2>/dev/null || :)
+
+  if [[ -z "$GH_VER_RELEASE" ]] || [[ "$GH_VER_RELEASE" == "null" ]]
+  then
+    __duct_msg e "no $GH_VER_NAMESPACE release information!"
+    __duct_msg d "$GH_VER_RELEASE_INFO"
+    (( GH_VER_ERROR+=1 ))
+
+    if [[ -n "$GH_VER_TAG" ]]
+    then
+      __duct_msg n "found $GH_VER_NAMESPACE latest tag $GH_VER_TAG"
+      GH_VER="$GH_VER_TAG"
+      GH_VER_URL="https://github.com/${GH_VER_NAMESPACE}"
+    else
+      __duct_msg e "no $GH_VER_NAMESPACE tag information!"
+      __duct_msg d "$GH_VER_TAG_INFO"
+      (( GH_VER_ERROR+=1 ))
+    fi
+
+    if [[ "$GH_VER_ERROR" -ge 2 ]]
+    then
+      return 1
+    fi
+  elif [[ -n "$GH_VER_RELEASE" ]]
+  then
+    __duct_msg n "found $GH_VER_NAMESPACE latest release $GH_VER_RELEASE"
+    GH_VER="$GH_VER_RELEASE"
+    GH_VER_URL="$(echo "$GH_VER_RELEASE_INFO" | jq -e -r '.html_url')"
+  fi
+
+  case "$GH_VER_MODE" in
+    v|value)
+      echo "$GH_VER"
+      return 0
+    ;;
+    e|export)
+      __duct_msg d "export DUCT_GITHUB_LATEST_VERSION=$GH_VER"
+      export DUCT_GITHUB_LATEST_VERSION="$GH_VER"
+      __duct_msg d "export DUCT_GITHUB_LATEST_VERSION_URL=$GH_VER_URL"
+      export DUCT_GITHUB_LATEST_VERSION_URL="$GH_VER_URL"
+      return 0
+    ;;
+  esac
+}

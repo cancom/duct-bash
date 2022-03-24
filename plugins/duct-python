@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+
+# duct-python
+
+declare DUCT_PYTHON_INTERPRETER="python3"
+declare -a DUCT_PYTHON_BIN=(
+  python3
+)
+
+declare DUCT_PYTHON_VENV="${PYTHON_VENV:-"${DUCT_TMP_DIR}/duct-python-venv"}"
+declare DUCT_PYTHON_VENV_CLEAR=false
+declare DUCT_PYTHON_VENV_DEACTIVATE=false
+declare -a DUCT_PYTHON_VENV_PKGS=(
+  pip
+  setuptools
+  wheel
+)
+
+declare -a DUCT_PYTHON_VENV_OPT=(
+  --copies
+)
+
+declare -a DUCT_PYTHON_PIP_OPT=(
+  --isolated
+  --no-cache-dir
+  --no-input
+  --upgrade
+)
+
+
+# python <command> [options]
+__duct_python() {
+  local PY_CMD="${1:-}"
+  shift
+  local -a PY_OPT=( "$@" )
+
+  case "$PY_CMD"
+  in
+    check)
+      __duct_bin_check "${DUCT_PYTHON_BIN[@]}"
+      return $?
+    ;;
+
+    venv)
+      __duct_python_venv "${PY_OPT[@]}"
+      return $?
+    ;;
+
+    pip)
+      __duct_python_pip "${PY_OPT[@]}"
+      return $?
+    ;;
+  esac
+}
+
+__duct_python_venv() {
+  local -a VENV_OPT=( "$@" )
+  local VENV_RC=0
+  local VENV_MSG="creating"
+
+  if [[ -z "$DUCT_PYTHON_VENV" ]]
+  then
+    __duct_msg e "no venv path!"
+    return 1
+  fi
+
+  if [[ -d "$DUCT_PYTHON_VENV" ]]
+  then
+    if [[ "$DUCT_PYTHON_VENV_CLEAR" == true ]]
+    then
+      __duct_msg w "$DUCT_PYTHON_VENV exists, clearing!"
+      VENV_OPT+=( --clear )
+      VENV_MSG="clearing"
+    else
+      VENV_OPT+=( --upgrade )
+      VENV_MSG="upgrading"
+    fi
+  fi
+
+  __duct_msg n "$VENV_MSG $DUCT_PYTHON_VENV"
+  __duct_run "$DUCT_PYTHON_INTERPRETER" -m venv "${DUCT_PYTHON_VENV_OPT[@]}" "${VENV_OPT[@]}" "$DUCT_PYTHON_VENV" || VENV_RC=$?
+
+  if [[ "${#DUCT_PYTHON_VENV_PKGS}" -gt 0 ]]
+  then
+    __duct_python_pip "${DUCT_PYTHON_VENV_PKGS[@]}"
+  fi
+
+  if [[ "$DUCT_PYTHON_VENV_DEACTIVATE" == true ]] && [[ "$VIRTUAL_ENV" == "$DUCT_PYTHON_VENV" ]]
+  then
+    __duct_msg n "deactivating $DUCT_PYTHON_VENV"
+    deactivate
+  fi
+
+  return $VENV_RC
+}
+
+# pip <venv> <requirements>
+__duct_python_pip() {
+  local -a PIP_REQ=( "$@")
+  local -a PIP_REQ_FILES=()
+
+  if [[ -z "$DUCT_PYTHON_VENV" ]]
+  then
+    __duct_msg e "no venv path!"
+    return 1
+  fi
+
+  if [[ ! -d "$DUCT_PYTHON_VENV" ]]
+  then
+    __duct_msg e "$DUCT_PYTHON_VENV not found!"
+    return 1
+  fi
+
+  if [[ ! -f "${DUCT_PYTHON_VENV}/bin/activate" ]]
+  then
+    __duct_msg e "$DUCT_PYTHON_VENV not a python venv!"
+    return 1
+  else
+    __duct_msg n "activating $DUCT_PYTHON_VENV"
+    __duct_run source "${DUCT_PYTHON_VENV}/bin/activate"
+  fi
+
+  if [[ "${#PIP_REQ}" -eq 0 ]]
+  then
+    __duct_msg w "no requirements"
+    return 0
+  fi
+
+  for REQ in "${PIP_REQ[@]}"
+  do
+    if [[ -f "$REQ" ]]
+    then
+      __duct_msg d "adding requirements file $REQ"
+      PIP_REQ_FILES+=( "$REQ" )
+      readarray -t PIP_REQ < <(__duct_strip_array "^${REQ}$" "${PIP_REQ[@]}")
+    fi
+  done
+
+  if [[ "${#PIP_REQ[@]}" -gt 0 ]]
+  then
+    __duct_msg n "installing ${PIP_REQ[*]}"
+    __duct_run pip install "${DUCT_PYTHON_PIP_OPT[@]}" "${PIP_REQ[@]}"
+  fi
+
+  for REQ_FILE in "${PIP_REQ_FILES[@]}"
+  do
+    __duct_msg n "installing from $REQ_FILE"
+    __duct_run pip install "${DUCT_PYTHON_PIP_OPT[@]}" --requirement "$REQ_FILE"
+  done
+}

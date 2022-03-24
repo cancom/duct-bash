@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+
+# duct-example
+
+declare DUCT_EXAMPLE_FOO="default"
+
+# example <command> [options]
+__duct_example() {
+  local EX_CMD="${1:-}"; shift
+  local -a EX_OPT=( "$@" )
+
+  case "$EX_CMD"
+  in
+    check)
+      __duct_example_check
+    ;;
+    config)
+      __duct_example_config "${EX_OPT[@]}"
+    ;;
+  esac
+}
+
+__duct_example_help() {
+  :
+}
+
+__duct_example_check() {
+  :
+  return 0
+}
+
+__duct_example_config() {
+  :
+  return 0
+}

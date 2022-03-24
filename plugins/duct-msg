@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+
+# duct-msg
+
+declare DUCT_MSG_LEVEL=7 # DEBUG
+declare DUCT_MSG_DATE=false
+declare DUCT_MSG_DATE_FORMAT="%F %T"
+declare DUCT_MSG_CALL_PATH_SHOW=true
+declare DUCT_MSG_CALL_PATH_SEPARATOR="/"
+declare DUCT_MSG_COLOR=true
+declare DUCT_MSG_COLOR_EMERGENCY="\033[1;31m"
+declare DUCT_MSG_COLOR_ALERT="\033[1;35m"
+declare DUCT_MSG_COLOR_CRITICAL="\033[0;35m"
+declare DUCT_MSG_COLOR_ERROR="\033[0;31m"
+declare DUCT_MSG_COLOR_WARNING="\033[0;33m"
+declare DUCT_MSG_COLOR_NOTICE="\033[0;37m"
+declare DUCT_MSG_COLOR_INFO="\033[1;36m"
+declare DUCT_MSG_COLOR_DEBUG="\033[1;34m"
+declare DUCT_MSG_COLOR_OTHER="\033[0;32m"
+
+# msg <level> <message>
+__duct_msg() {
+  local SELF="${FUNCNAME[0]}"
+  local MSG_LEVEL="$1"
+  shift
+  local IFS=" "
+  local -a MSG_OUTPUT=( "$@" )
+  local MSG_CALL=":"
+  local MSG_DATE
+  local MSG_BASH
+  local -a MSG_FUNC=( "${FUNCNAME[@]}" )
+  local MSG_FUNC_STRIP="(${SELF}|duct)$"
+  local -a _CALL=()
+  local I
+
+  MSG_BASH="$( __duct_basename "${BASH_SOURCE[-1]}" )"
+
+  readarray -t MSG_FUNC < <(__duct_strip_array "$MSG_FUNC_STRIP" "${MSG_FUNC[@]}")
+
+  for (( I=${#MSG_FUNC[@]}-1; I>=0; I--))
+  do
+    if [[ ${MSG_FUNC[I]} == "main" ]]
+    then
+      continue
+    else
+      _CALL+=( "${MSG_FUNC[I]//__duct_/}" )
+    fi
+  done
+
+  if [[ "$DUCT_MSG_CALL_PATH_SHOW" == true ]]
+  then
+    if [[ -n "${_CALL[*]}" ]]
+    then
+      MSG_CALL="${_CALL[*]}"
+      MSG_CALL=" ${MSG_CALL// /"${DUCT_MSG_CALL_PATH_SEPARATOR}"}:"
+    fi
+  else
+    MSG_CALL=" ${_CALL[-1]}:"
+  fi
+
+  local MSG_COLOR
+  local MSG_COLOR_NONE="\033[0m"
+
+  case "$MSG_LEVEL" in
+    em|emergency|0)
+      MSG_LEVEL="EMERGENCY"
+      MSG_COLOR="$DUCT_MSG_COLOR_EMERGENCY"
+      ;;
+    a|alert|1)
+      MSG_LEVEL="ALERT"
+      MSG_COLOR="$DUCT_MSG_COLOR_ALERT"
+      ;;
+    c|critical|2)
+      MSG_LEVEL="CRITICAL"
+      MSG_COLOR="$DUCT_MSG_COLOR_CRITICAL"
+      ;;
+    e|error|3)
+      MSG_LEVEL="ERROR"
+      MSG_COLOR="$DUCT_MSG_COLOR_ERROR"
+      ;;
+    w|warning|4)
+      MSG_LEVEL="WARNING"
+      MSG_COLOR="$DUCT_MSG_COLOR_WARNING"
+      ;;
+    n|notice|5)
+      [[ $DUCT_MSG_LEVEL -lt 5 ]] && return
+      MSG_LEVEL="NOTICE"
+      MSG_COLOR="$DUCT_MSG_COLOR_NOTICE"
+      ;;
+    i|info|6)
+      [[ $DUCT_MSG_LEVEL -lt 6 ]] && return
+      MSG_LEVEL="INFO"
+      MSG_COLOR="$DUCT_MSG_COLOR_INFO"
+      ;;
+    d|debug|7)
+      [[ $DUCT_MSG_LEVEL -lt 7 ]] && return
+      MSG_LEVEL="DEBUG"
+      MSG_COLOR="$DUCT_MSG_COLOR_DEBUG"
+      ;;
+    x|o|other|8)
+      MSG_LEVEL="OTHER"
+      MSG_COLOR="$DUCT_MSG_COLOR_OTHER"
+      ;;
+  esac
+
+  if [[ $DUCT_MSG_COLOR == false ]]
+  then
+    MSG_COLOR=""
+    MSG_COLOR_NONE=""
+  fi
+
+  if [[ $DUCT_MSG_DATE == true ]]
+  then
+    MSG_DATE="$(date +"$DUCT_MSG_DATE_FORMAT") "
+  else
+    MSG_DATE=""
+  fi
+  >&2 echo -e "${MSG_COLOR}${MSG_DATE}[${MSG_LEVEL}] ${MSG_BASH}${MSG_CALL} ${MSG_OUTPUT[*]}${MSG_COLOR_NONE}"
+}

@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+
+# duct-gitlab
+
+DUCT_GITLAB_USER="${GITLAB_USER:-""}"
+DUCT_GITLAB_TOKEN="${GITLAB_TOKEN:-""}"
+
+DUCT_GITLAB_HOST="${GITLAB_HOST:-"gitlab.com"}"
+DUCT_GITLAB_SCHEME="https"
+DUCT_GITLAB_API="api/v4"
+
+# gitlab
+__duct_gitlab() {
+  local GL_CMD="${1:-}"; shift
+  local -a GL_OPT=( "$@" )
+
+  case "$GL_CMD"
+  in
+    curl)
+      __duct_gitlab_curl "${GL_OPT[@]}"
+      return $?
+    ;;
+    projects)
+      __duct_gitlab_projects "${GL_OPT[@]}"
+      return $?
+    ;;
+  esac
+}
+
+# gitlab curl
+__duct_gitlab_curl() {
+  local -a GL_URL=( "$@" )
+  local GL_RC=0
+  local GL_WARN=0
+  local GL_TOKEN
+  local -a GL_CURL_OPTS=()
+
+  if [[ -z "$DUCT_GITLAB_USER" ]]
+  then
+    __duct_msg w "[DUCT_] GITLAB_USER is unset!"
+    (( GL_WARN+=1 ))
+  fi
+
+  if [[ -z "$DUCT_GITLAB_TOKEN" ]]
+  then
+    __duct_msg w "[DUCT_] GITLAB_TOKEN is unset!"
+    (( GL_WARN+= 1 ))
+  fi
+
+  if [[ "$GL_WARN" -eq 0 ]]
+  then
+    GL_TOKEN=$(__duct_base64 "$DUCT_GITLAB_TOKEN")
+    GL_CURL_OPTS+=( --header "PRIVATE-TOKEN: ${GL_TOKEN}" )
+  fi
+
+  __duct_curl "${GL_CURL_OPTS[@]}" "${GL_URL[@]}" || GL_RC=$?
+  return $GL_RC
+}
+
+# gitlab projects <ssh|http|id> [search] [filter]
+__duct_gitlab_projects() {
+  local GL_RETURN="${1:-"http"}"
+  local GL_SEARCH="${2:-""}"
+  local GL_FILTER="${3:-""}"
+  local GL_ERROR=0
+
+  local GL_API_URL="${DUCT_GITLAB_SCHEME}://${DUCT_GITLAB_HOST}/${DUCT_GITLAB_API}"
+  local GL_PER_PAGE=100
+  local GL_HEADER_FILE
+  GL_HEADER_FILE="$(__duct_tmpgen gitlab-curl-)"
+
+  local GL_ID_AFTER=1
+  local GL_API_QUERY="projects?search=${GL_SEARCH}&pagination=keyset&per_page=${GL_PER_PAGE}&order_by=id&sort=asc&simple=true&id_after=${GL_ID_AFTER}"
+  local -a GL_RESULT=()
+  local GL_JQ
+
+  if [[ -z "$DUCT_GITLAB_HOST" ]]
+  then
+    __duct_msg w "[DUCT_] GITLAB_HOST is unset!"
+    (( GL_ERROR+=1 ))
+  fi
+
+  if [[ "$GL_RETURN" == "http" ]]
+  then
+    GL_JQ='.[].http_url_to_repo'
+  elif [[ "$GL_RETURN" == "ssh" ]]
+  then
+    GL_JQ='.[].ssh_url_to_repo'
+  elif [[ "$GL_RETURN" == "id" ]]
+  then
+    GL_JQ='.[] | (.id|tostring) + ":" + .path'
+  else
+    __duct_msg e "$GL_RETURN unknown!"
+    return 1
+  fi
+
+  while true
+  do
+    readarray -t -O "${#GL_RESULT[@]}" GL_RESULT < <( __duct_gitlab_curl --dump-header "$GL_HEADER_FILE" "${GL_API_URL}/${GL_API_QUERY}" | jq -r "$GL_JQ" )
+
+    GL_ID_AFTER=$(__duct_grep -Po 'id_after=[0-9]+' "$GL_HEADER_FILE") || break
+    GL_API_QUERY="${GL_API_QUERY//id_after=*/${GL_ID_AFTER}}"
+    __duct_msg d "results ${#GL_RESULT[@]}"
+  done
+  __duct_run rm -f "${GL_HEADER_FILE:?}"
+  __duct_msg d "applying filter '${GL_FILTER:-"none"}'"
+
+  for RESULT in "${GL_RESULT[@]}"
+  do
+    if [[ -n "$GL_FILTER" ]]
+    then
+      if [[ "$RESULT" =~ $GL_FILTER ]]
+      then
+        echo "$RESULT"
+      else
+        continue
+      fi
+    else
+
+      if [[ "$GL_RETURN" == "id" ]]
+      then
+        _ID="${RESULT%%:*}"
+        _SEARCH="${RESULT#*:}"
+
+        if [[ "$GL_SEARCH" == "$_SEARCH" ]]
+        then
+          echo "$_ID"
+          continue
+        fi
+
+      else
+        echo "$RESULT"
+      fi
+
+    fi
+  done
+}

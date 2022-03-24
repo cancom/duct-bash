@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+
+# duct-terraform
+
+declare -a DUCT_TERRAFORM_BIN=(
+  terraform
+)
+declare DUCT_TF_CONFIG_FILE="$HOME/.terraformrc"
+declare DUCT_TF_CONFIG_REPLACE=false
+# shellcheck disable=SC2016
+declare -a DUCT_TF_CONFIG=(
+  'disable_checkpoint = true'
+  'plugin_cache_dir = "$HOME/.terraform.d/plugin-cache"'
+)
+declare DUCT_TF_BACKEND_TYPE=""
+declare DUCT_TF_BACKEND_FILE="terraform-backend.tf"
+declare -a DUCT_TF_BACKEND_CONFIG=()
+
+declare DUCT_TF_OUT_FILE="terraform.out"
+declare DUCT_TF_PLAN_FILE="terraform-plan.zip"
+declare DUCT_TF_PLAN_JSON_FILE="terraform-plan.json"
+declare DUCT_TF_APPLY_JSON_FILE="terraform-apply.json"
+declare DUCT_TF_DESTROY_JSON_FILE="terraform-destroy.json"
+declare -a DUCT_TF_FAIL_MESSAGES=()
+
+declare -a DUCT_TF_CLEAN_DIRS=(
+  .terraform
+)
+
+declare -a DUCT_TF_CLEAN_FILES=(
+  .terraform.lock.hcl
+  terraform.tfstate
+  terraform.tfstate.backup
+)
+
+declare DUCT_TF_VERSION_BRANCH="1.0"
+
+# terraform
+__duct_terraform() {
+  local TF_CMD="${1:-}"; shift
+  local -a TF_OPT=( "$@" )
+  local TF_RC=0
+
+  # adopted from https://gitlab.com/gitlab-org/terraform-images
+  local TF_JQ_PLAN='
+    (
+      [.resource_changes[]?.change.actions?] | flatten
+    ) | {
+      "create":(map(select(.=="create")) | length),
+      "update":(map(select(.=="update")) | length),
+      "delete":(map(select(.=="delete")) | length)
+    }
+  '
+  local TF_PLAN
+  local TF_PLAN_JSON
+  local TF_APPLY
+  local TF_APPLY_JSON
+  local TF_DESTROY
+  local TF_DESTROY_JSON
+
+  # https://www.terraform.io/docs/cli/config/environment-variables.html
+  export TF_IN_AUTOMATION=true
+  unset TF_CLI_ARGS
+  unset TF_CLI_CONFIG_FILE
+
+  case "$TF_CMD"
+  in
+    check)
+      __duct_bin_check "${DUCT_TERRAFORM_BIN[@]}"
+      return $?
+    ;;
+
+    latest|latest-version)
+      __duct_terraform_lastest "${TF_OPT[@]}"
+      return $?
+    ;;
+
+    config)
+      __duct_terraform_config
+      return 0
+    ;;
+
+    strip-backend|strip_backend)
+      __duct_terraform_strip_backend "${TF_OPT[@]}"
+      return $?
+    ;;
+
+    backend)
+      __duct_terraform_backend
+      return 0
+    ;;
+
+    init)
+      __duct_terraform_config
+      __duct_terraform_backend
+      TF_OPT+=(
+        -input=false
+        -reconfigure
+        -upgrade
+      )
+    ;;
+
+    validate)
+      __duct_terraform init -backend=false
+    ;;
+
+    plan)
+      __duct_terraform init
+      TF_OPT+=(
+        -input=false
+        -out="$DUCT_TF_PLAN_FILE"
+      )
+    ;;
+
+    apply)
+      if [[ ! -f "$DUCT_TF_PLAN_FILE" ]]
+      then
+        __duct_msg w "$DUCT_TF_PLAN_FILE not found!"
+        return 1
+      else
+        __duct_terraform init
+        TF_OPT+=(
+          -input=false
+          "$DUCT_TF_PLAN_FILE"
+        )
+      fi
+    ;;
+
+    apply-no-plan)
+      __duct_terraform init
+      TF_CMD="apply"
+      TF_OPT+=(
+        -input=false
+        -auto-approve
+      )
+    ;;
+
+    destroy)
+      __duct_terraform init
+      TF_OPT+=(
+        -input=false
+        -auto-approve
+      )
+    ;;
+
+    fmt)
+      TF_OPT+=(
+        -check
+        -diff
+        -recursive
+      )
+    ;;
+
+    plan-json)
+      if [[ ! -f "$DUCT_TF_PLAN_FILE" ]]
+      then
+        __duct_msg e "$DUCT_TF_PLAN_FILE not found!"
+        return 1
+      else
+        TF_OPT+=(
+          -json
+          "$DUCT_TF_PLAN_FILE"
+        )
+        TF_PLAN="$(terraform show "${TF_OPT[@]}")"
+        if [[ -n "$TF_PLAN" ]]
+        then
+          __duct_msg n "creating $DUCT_TF_PLAN_JSON_FILE"
+          TF_PLAN_JSON="$(echo "$TF_PLAN" | jq -r "$TF_JQ_PLAN")"
+          echo "$TF_PLAN_JSON" > "$DUCT_TF_PLAN_JSON_FILE"
+          __duct_msg d "${DUCT_TF_PLAN_JSON_FILE}:\n$(cat "$DUCT_TF_PLAN_JSON_FILE")"
+        fi
+        return 0
+      fi
+    ;;
+
+    apply-json)
+      if [[ ! -f "$DUCT_TF_OUT_FILE" ]]
+      then
+        __duct_msg e "$DUCT_TF_OUT_FILE not found!"
+        return 1
+      else
+        TF_APPLY="$(__duct_grep -Po 'Resources: [0-9]+ added, [0-9]+ changed, [0-9]+ destroyed.' "$DUCT_TF_OUT_FILE")"
+        if [[ -n "$TF_APPLY" ]]
+        then
+          readarray -t TF_APPLY < <(__duct_grep -Eo '[0-9]+' <<< "$TF_APPLY")
+          TF_APPLY_JSON="{ \"create\": ${TF_APPLY[0]}, \"update\": ${TF_APPLY[1]}, \"delete\": ${TF_APPLY[2]} }"
+          __duct_msg n "creating $DUCT_TF_APPLY_JSON_FILE"
+          echo "$TF_APPLY_JSON" | jq -r > "$DUCT_TF_APPLY_JSON_FILE"
+          __duct_msg d "${DUCT_TF_APPLY_JSON_FILE}:\n$(cat "$DUCT_TF_APPLY_JSON_FILE")"
+        fi
+      fi
+      return 0
+    ;;
+
+    destroy-json)
+      if [[ ! -f "$DUCT_TF_OUT_FILE" ]]
+      then
+        __duct_msg e "$DUCT_TF_OUT_FILE not found!"
+        return 1
+      else
+        TF_DESTROY="$(__duct_grep -Po 'Resources: [0-9]+ destroyed.' "$DUCT_TF_OUT_FILE")"
+        if [[ -n "$TF_DESTROY" ]]
+        then
+          readarray -t TF_DESTROY < <(__duct_grep -Eo '[0-9]+' <<< "$TF_DESTROY")
+          TF_DESTROY_JSON="{ \"create\": 0, \"update\": 0, \"delete\": ${TF_DESTROY[0]} }"
+          __duct_msg n "creating $DUCT_TF_DESTROY_JSON_FILE"
+          echo "$TF_DESTROY_JSON" | jq -r > "$DUCT_TF_DESTROY_JSON_FILE"
+          __duct_msg d "${DUCT_TF_DESTROY_JSON_FILE}:\n$(cat "$DUCT_TF_DESTROY_JSON_FILE")"
+        fi
+      fi
+      return 0
+    ;;
+
+    clean)
+      __duct_clean "${DUCT_TF_CLEAN_DIRS[@]}"
+      __duct_clean "${DUCT_TF_CLEAN_FILES[@]}"
+      return 0
+    ;;
+
+    *)
+      __duct_msg e "unsupported terraform command $TF_CMD"
+      return 1
+    ;;
+  esac
+
+  __duct_msg n "running terraform $TF_CMD"
+  __duct_run_tee "$DUCT_TF_OUT_FILE" terraform "$TF_CMD" "${TF_OPT[@]}" || TF_RC=$?
+  __duct_terraform_fail
+
+  unset TF_IN_AUTOMATION
+  return $TF_RC
+}
+
+# terraform latest <branch>
+__duct_terraform_lastest() {
+  local TF_VER_BRANCH="${1:-"$DUCT_TF_VERSION_BRANCH"}"
+  local TF_VER_REMOTE
+  local TF_VER_LIST
+  local TF_VER_PATTERN="[0-9]+\.[0-9]+\.[0-9]+(-(rc|beta|alpha|oci)[0-9]*)?"
+  local TF_VER_LATEST
+
+  TF_VER_REMOTE="$(DUCT_DRY_RUN=false __duct_curl "https://releases.hashicorp.com/terraform/")"
+  TF_VER_LIST=$(__duct_grep -oE "$TF_VER_PATTERN" <<<"$TF_VER_REMOTE" | uniq | sort -Vr)
+  TF_VER_LATEST=$(__duct_grep -E "^${TF_VER_BRANCH}" <<<"$TF_VER_LIST" | head -n1)
+
+  __duct_msg n "latest terraform version for branch $TF_VER_BRANCH is $TF_VER_LATEST"
+  echo "$TF_VER_LATEST"
+}
+
+__duct_terraform_install() {
+  :
+}
+
+# terraform config
+__duct_terraform_config() {
+  if [[ -f "$DUCT_TF_CONFIG_FILE" ]]
+  then
+    if [[ "$DUCT_TF_CONFIG_REPLACE" == true ]]
+    then
+      __duct_msg w "replacing existing ${DUCT_TF_CONFIG_FILE}!"
+    else
+      __duct_msg d "$DUCT_TF_CONFIG_FILE exists!"
+      return 0
+    fi
+  fi
+
+  for TF_CONFIG in "${DUCT_TF_CONFIG[@]}"
+  do
+    if [[ "$TF_CONFIG" =~ plugin_cache_dir ]]
+    then
+      TF_PLUGIN_CACHE_DIR="$(eval echo "${TF_CONFIG##*=}")"
+
+      if [[ ! -d "$TF_PLUGIN_CACHE_DIR" ]]
+      then
+        __duct_run mkdir -p "$TF_PLUGIN_CACHE_DIR"
+      fi
+    fi
+    __duct_msg d "add $TF_CONFIG"
+    echo "$TF_CONFIG"
+  done > "$DUCT_TF_CONFIG_FILE"
+}
+
+# terraform strip-backend <file>
+__duct_terraform_strip_backend() {
+  local TF_FILE="${1:-"main.tf"}"
+
+  __duct_msg w "experimental feature!"
+
+  if [[ -n "$DUCT_TF_BACKEND_TYPE" ]] && [[ -n "${DUCT_TF_BACKEND_CONFIG[*]}" ]]
+  then
+    __duct_msg d "removing backend from $TF_FILE"
+
+    # TODO: dry-run & match single line
+    __duct_sed -i '/backend.*{/,/}/d' "${TF_FILE}"
+  else
+    __duct_msg d "not removing backend from $TF_FILE"
+  fi
+}
+
+# terraform backend
+__duct_terraform_backend() {
+  local TF_BACKEND_BEGIN
+  local TF_BACKEND_END
+  local TF_BACKEND_CONFIG
+
+  if [[ -n "$DUCT_TF_BACKEND_TYPE" ]] && [[ "${#DUCT_TF_BACKEND_CONFIG[@]}" -ge 1 ]]
+  then
+    TF_BACKEND_BEGIN="terraform {\n  backend \"$DUCT_TF_BACKEND_TYPE\" {"
+    TF_BACKEND_END="  }\n}"
+
+    __duct_msg n "creating $DUCT_TF_BACKEND_FILE"
+    (
+      echo -e "$TF_BACKEND_BEGIN"
+
+      for TF_BACKEND_CONFIG in "${DUCT_TF_BACKEND_CONFIG[@]}"
+      do
+        _KEY="${TF_BACKEND_CONFIG%=*}"
+        _VALUE="${TF_BACKEND_CONFIG#*=}"
+
+        if [[ "$_KEY" =~ (password|token|secret) ]] && [[ "$DUCT_MASK" == true ]]
+        then
+          __duct_msg d "${_KEY}=\"${DUCT_MASK_STR}\""
+        else
+          __duct_msg d "${_KEY}=\"${_VALUE}\""
+        fi
+        echo -e "    ${_KEY}=\"${_VALUE}\""
+      done
+
+      echo -e "$TF_BACKEND_END"
+    ) > "$DUCT_TF_BACKEND_FILE"
+
+    # terraform fmt
+    __duct_run terraform fmt -list=false "$DUCT_TF_BACKEND_FILE"
+  else
+    __duct_msg d "no backend config"
+    return 0
+  fi
+}
+
+# terraform fail
+__duct_terraform_fail() {
+  if [[ -f "$DUCT_TF_OUT_FILE" ]]
+  then
+    for FAIL in "${DUCT_TF_FAIL_MESSAGES[@]}"
+    do
+      if __duct_grep -qoF "$FAIL" "$DUCT_TF_OUT_FILE"
+      then
+        __duct_msg e "got '$FAIL' in terraform output!"
+        TF_RC=1
+      else
+        continue
+      fi
+    done
+  fi
+}

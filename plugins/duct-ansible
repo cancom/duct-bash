@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+# shellcheck disable=SC1091
+
+# duct-ansible
+
+declare DUCT_ANSIBLE_VENV="${ANSIBLE_VENV:-"${DUCT_TMP_DIR}/duct-python-venv"}"
+declare -a DUCT_ANSIBLE_BIN=(
+  ansible-galaxy
+  ansible-playbook
+  ansible-vault
+)
+
+declare DUCT_ANSIBLE_REQUIREMENTS="requirements.yml"
+declare DUCT_ANSIBLE_VAULT_PASSWORD="${ANSIBLE_VAULT_PASSWORD:-}"
+declare DUCT_ANSIBLE_VAULT_PASSWORD_FILE="${ANSIBLE_VAULT_PASSWORD_FILE:-}"
+
+declare -a DUCT_ANSIBLE_LINT_OPTS=(
+  --force-color
+  --progressive
+)
+
+declare -a DUCT_ANSIBLE_CLEAN_DIRS=()
+declare -a DUCT_ANSIBLE_CLEAN_FILES=()
+
+# ansible <command>
+__duct_ansible() {
+  local ANS_CMD="${1:-}"; shift
+  local -a ANS_OPT=( "$@" )
+  local ANS_RC=0
+
+  case "$ANS_CMD"
+  in
+    venv)
+      __duct_ansible_venv "${ANS_OPT[@]}" || ANS_RC=$?
+      return $ANS_RC
+    ;;
+
+    check)
+      __duct_bin_check "${DUCT_ANSIBLE_BIN[@]}"
+      return $?
+    ;;
+
+    requirements)
+      __duct_ansible_requirements || ANS_RC=$?
+      return $ANS_RC
+    ;;
+
+    vault)
+      __duct_ansible_vault || ANS_RC=$?
+      return $ANS_RC
+    ;;
+
+    lint)
+      __duct_msg n "running ansible-lint"
+      __duct_run ansible-lint "${DUCT_ANSIBLE_LINT_OPTS[@]}" || ANS_RC=$?
+      return $ANS_RC
+    ;;
+
+    playbook)
+      __duct_msg n "running ansible-playbook"
+      __duct_run ansible-playbook "${ANS_OPT[@]}" || ANS_RC=$?
+      return $ANS_RC
+    ;;
+
+    clean)
+      __duct_clean "${DUCT_ANSIBLE_CLEAN_DIRS[@]}"
+      __duct_clean "${DUCT_ANSIBLE_CLEAN_FILES[@]}"
+      return 0
+  esac
+}
+
+# venv
+__duct_ansible_venv() {
+  if [[ -n "$DUCT_ANSIBLE_VENV" ]]
+  then
+    if [[ -f "${DUCT_ANSIBLE_VENV}/bin/activate" ]]
+    then
+      __duct_msg n "activating $DUCT_ANSIBLE_VENV"
+      source "${DUCT_ANSIBLE_VENV}/bin/activate"
+    else
+      __duct_msg e "${DUCT_ANSIBLE_VENV}/bin/activate not found!"
+      return 1
+    fi
+  else
+    __duct_msg e "DUCT_ANSIBLE_VENV is unset!"
+    return 1
+  fi
+}
+
+# requirements
+__duct_ansible_requirements() {
+  if [[ -f "${DUCT_ANSIBLE_REQUIREMENTS}" ]]
+  then
+    __duct_msg n "installing collections from $DUCT_ANSIBLE_REQUIREMENTS"
+    __duct_run ansible-galaxy collection install --upgrade -r "$DUCT_ANSIBLE_REQUIREMENTS"
+
+    __duct_msg n "installing roles from $DUCT_ANSIBLE_REQUIREMENTS"
+    __duct_run ansible-galaxy role install -r "$DUCT_ANSIBLE_REQUIREMENTS"
+  else
+    __duct_msg n "no $DUCT_ANSIBLE_REQUIREMENTS file found!"
+  fi
+}
+
+# vault
+__duct_ansible_vault() {
+  local ANS_ERROR=0
+  local ANS_VAULT_PASSWORD
+
+  if [[ -z "$DUCT_ANSIBLE_VAULT_PASSWORD" ]]
+  then
+    __duct_msg e "[DUCT_] ANSIBLE_VAULT_PASSWORD is unset!"
+    (( ANS_ERROR+=1 ))
+  fi
+
+  if [[ -z "$DUCT_ANSIBLE_VAULT_PASSWORD_FILE" ]]
+  then
+    __duct_msg e "[DUCT_] ANSIBLE_VAULT_PASSWORD_FILE is unset!"
+    (( ANS_ERROR+=1 ))
+  fi
+
+  if [[ $ANS_ERROR -gt 0 ]]
+  then
+    return 1
+  fi
+
+  ANS_VAULT_PASSWORD="$(__duct_base64 "$DUCT_ANSIBLE_VAULT_PASSWORD")"
+  __duct_sfile "$DUCT_ANSIBLE_VAULT_PASSWORD_FILE" 0600 "$ANS_VAULT_PASSWORD"
+}

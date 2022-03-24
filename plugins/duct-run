@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+
+# duct-run
+
+declare DUCT_DRY_RUN=true
+declare DUCT_RUN_HOOK=true
+declare -A DUCT_RUN_HOOKS=()
+
+# duct run hook <return-code> <command>
+__duct_run_hook() {
+  local RUN_RC="$1"
+  shift
+  local RUN_CMD=( "$@" )
+  local _CMD
+
+  _CMD="$(__duct_basename "${RUN_CMD[0]}")"
+
+  if [[ -n "${DUCT_RUN_HOOKS[${_CMD}]+duct}" ]]
+  then
+    __duct_msg d "${_CMD}:${DUCT_RUN_HOOKS[${_CMD}]}"
+    __duct_run "${DUCT_RUN_HOOKS[${_CMD}]}" "$RUN_RC" "${RUN_CMD[@]}"
+  fi
+}
+
+# run <command> [options]
+__duct_run() {
+  local -a RUN=("$@")
+  local _RUN
+  local RUN_RC=0
+
+  case "${RUN[0]}"
+  in
+    tee)
+      readarray -t RUN < <(__duct_strip_array "^(tee)$" "${RUN[@]}")
+      __duct_run_tee "${RUN[@]}"
+      return $?
+    ;;
+  esac
+
+  local _RUN="${RUN[*]}"
+  local _HOOK
+
+  # mask
+  if [[ "$DUCT_MASK" == true ]]
+  then
+    if [[ "$_RUN" =~ ^curl ]]
+    then
+      # github
+      _RUN="$(__duct_sed "s/-u \([0-9A-Za-z_\-]*\):\([0-9A-Za-z_\-]*\)\s/-u \1:${DUCT_MASK_STR} /g" <<< "$_RUN")"
+
+      # gitlab
+      _RUN="$(__duct_sed "s/PRIVATE-TOKEN: \([0-9A-Za-z_\-]*\)\s/PRIVATE-TOKEN: ${DUCT_MASK_STR} /g" <<< "$_RUN")"
+
+    elif [[ "${RUN[*]}" =~ ^echo ]]
+    then
+      _RUN="$(__duct_sed "s/\([0-9A-Za-z_\-]*\):\([0-9A-Za-z_\-]*\)@/\1:${DUCT_MASK_STR}@/g" <<< "$_RUN")"
+    fi
+  fi
+
+  if [[ "$DUCT_DRY_RUN" == true ]]
+  then
+    __duct_msg d "$_RUN"
+    __duct_msg x "[DRY-RUN] $_RUN"
+  else
+    __duct_msg d "$_RUN"
+    command "${RUN[@]}" || RUN_RC=$?
+    __duct_msg d "runtime: ${SECONDS}s"
+
+    if [[ "$DUCT_RUN_HOOK" == true ]]
+    then
+      read -r -a _HOOK <<< "$_RUN"
+      __duct_run_hook "$RUN_RC" "${_HOOK[@]}"
+    fi
+
+    __duct_msg d "return code: $RUN_RC"
+    return $RUN_RC
+  fi
+}
+
+# run tee <output-file> <command> [options]
+__duct_run_tee() {
+  local TEE="$1"
+  shift
+  local RUN=("$@")
+
+  if [[ "$DUCT_DRY_RUN" == true ]]
+  then
+    __duct_run "${RUN[@]}"
+  else
+    __duct_run "${RUN[@]}" | tee "${TEE}"
+  fi
+}
