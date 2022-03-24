@@ -17,7 +17,6 @@ declare DUCT_ANSIBLE_VAULT_PASSWORD_FILE="${ANSIBLE_VAULT_PASSWORD_FILE:-}"
 
 declare -a DUCT_ANSIBLE_LINT_OPTS=(
   --force-color
-  --progressive
 )
 
 declare -a DUCT_ANSIBLE_CLEAN_DIRS=()
